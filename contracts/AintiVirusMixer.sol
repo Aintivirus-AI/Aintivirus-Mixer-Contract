@@ -375,9 +375,12 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
     // Groth16Verifier
     IGroth16Verifier public verifier;
 
-    // Mapping from nullifier to boolean to prevent double spends
-    mapping(bytes32 => bool) private nullifierHashes;
-    mapping(uint256 => bool) private commitments;
+    // Mapping from nullifier to boolean to prevent double spends and double withdrawals
+    mapping(bytes32 => bool) private nullifierHashes4EthWithdrawal;
+    mapping(uint256 => bool) private commitments4EthWithdrawal;
+
+    mapping(bytes32 => bool) private nullifierHashes4SolWithdrawal;
+    mapping(uint256 => bool) private commitments4SolWithdrawal;
 
     constructor(address _verifier) payable {
         verifier = IGroth16Verifier(_verifier);
@@ -388,7 +391,8 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
 
     function deposit(
         address _currency,
-        uint256 _amount
+        uint256 _amount,
+        uint256 _commitment
     ) public payable nonReentrant {
         if (msg.value > 0) {
             require(
@@ -403,6 +407,8 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
             );
             _processERC20Deposit(_currency, _amount);
         }
+
+        commitments4SolWithdrawal[_commitment] = true;
     }
 
     function withdraw(
@@ -413,17 +419,18 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
         uint[5] calldata _pubSignals,
         address payable _recipient
     ) public nonReentrant {
+        require(_nullifierHash == keccak256(abi.encodePacked(_pubSignals[0])), "Invalid nullifier");
         require(
-            !nullifierHashes[_nullifierHash],
+            !nullifierHashes4EthWithdrawal[_nullifierHash],
             "The note has been already spent"
         );
         require(
             verifier.verifyProof(_pA, _pB, _pC, _pubSignals),
             "Invalid withdraw proof"
         );
-        require(commitments[_pubSignals[0]], "Unknown commitment");
+        require(commitments4EthWithdrawal[_pubSignals[0]], "Unknown commitment");
 
-        nullifierHashes[_nullifierHash] = true;
+        nullifierHashes4EthWithdrawal[_nullifierHash] = true;
 
         // Withdraw funds to recipient
         if (address(uint160(_pubSignals[3])) == address(0)) {
@@ -437,27 +444,41 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
         }
     }
 
-    function addCommitment(uint256 _commitment) public onlyRole(OPERATOR_ROLE) {
-        commitments[_commitment] = true;
+    function verifySolWithdrawal(
+        bytes32 _nullifierHash,
+        uint[2] calldata _pA,
+        uint[2][2] calldata _pB,
+        uint[2] calldata _pC,
+        uint[5] calldata _pubSignals
+    ) public view returns (bool verified_) {
+        require(_nullifierHash == keccak256(abi.encodePacked(_pubSignals[0])), "Invalid nullifier");
+        require(
+            !nullifierHashes4SolWithdrawal[_nullifierHash],
+            "The note has been already spent"
+        );
+        require(commitments4SolWithdrawal[_pubSignals[0]], "Unknown commitment");
+        require(
+            verifier.verifyProof(_pA, _pB, _pC, _pubSignals),
+            "Invalid withdraw proof"
+        );
+    
+        verified_ = true;
     }
 
-    function setNullifierHash(bytes32 _nullifierHash) public onlyRole(OPERATOR_ROLE) {
-        nullifierHashes[_nullifierHash] = true;
+    function addCommitment4ETH(uint256 _commitment) public onlyRole(OPERATOR_ROLE) {
+        commitments4EthWithdrawal[_commitment] = true;
     }
 
-    function isSpent(bytes32 _nullifierHash) public view returns (bool) {
-        return nullifierHashes[_nullifierHash];
+    function setNullifierHash4ETH(bytes32 _nullifierHash) public onlyRole(OPERATOR_ROLE) {
+        nullifierHashes4EthWithdrawal[_nullifierHash] = true;
     }
 
-    function isSpentArray(
-        bytes32[] calldata _nullifierHashes
-    ) external view returns (bool[] memory spent) {
-        spent = new bool[](_nullifierHashes.length);
-        for (uint256 i = 0; i < _nullifierHashes.length; i++) {
-            if (isSpent(_nullifierHashes[i])) {
-                spent[i] = true;
-            }
-        }
+    function addCommitment4SOL(uint256 _commitment) public onlyRole(OPERATOR_ROLE) {
+        commitments4SolWithdrawal[_commitment] = true;
+    }
+
+    function setNullifierHash4SOL(bytes32 _nullifierHash) public onlyRole(OPERATOR_ROLE) {
+        nullifierHashes4SolWithdrawal[_nullifierHash] = true;
     }
 
     function _processETHDeposit(uint256 _amount) internal {
