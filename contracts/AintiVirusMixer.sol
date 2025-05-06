@@ -368,23 +368,34 @@ abstract contract ReentrancyGuard {
     }
 }
 
+interface IPoseidon {
+    function poseidon(uint[2] memory) external pure returns (uint256);
+}
+
 contract AintiVirusMixer is ReentrancyGuard, AccessControl {
-    // Role data of the contract operator
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
-    // Groth16Verifier
     IGroth16Verifier public verifier;
 
-    // Mapping from nullifier to boolean to prevent double spends and double withdrawals
-    mapping(bytes32 => bool) private nullifierHashes4EthWithdrawal;
-    mapping(uint256 => bool) private commitments4EthWithdrawal;
+    // Ethereum Commitment
+    mapping(uint256 => bool) public ethKnownCommitments;
 
-    mapping(bytes32 => bool) private nullifierHashes4SolWithdrawal;
-    mapping(uint256 => bool) private commitments4SolWithdrawal;
+    // Solana Commitment
+    mapping(uint256 => bool) public solKnownCommitments;
+
+    // Nullifier mappings
+    mapping(bytes32 => bool) public ethUsedNullifiers;
+    mapping(bytes32 => bool) public solUsedNullifiers;
+
+    event DepositForSolWithdrawal(
+        uint256 indexed commitment
+    );
+    event CommitmentAddedForEthWithdrawal(
+        uint256 indexed commitment
+    );
 
     constructor(address _verifier) payable {
         verifier = IGroth16Verifier(_verifier);
-
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(OPERATOR_ROLE, msg.sender);
     }
@@ -397,133 +408,106 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
         if (msg.value > 0) {
             require(
                 _currency == address(0),
-                "ERC20 token deposit can not bring ETH"
+                "ERC20 deposit cannot include ETH"
             );
-            _processETHDeposit(_amount);
+            require(msg.value >= _amount, "Insufficient ETH deposit");
         } else {
             require(
                 IERC20(_currency).balanceOf(msg.sender) >= _amount,
-                "Insufficient ERC20 balance for deposit"
+                "Insufficient ERC20 balance"
             );
-            _processERC20Deposit(_currency, _amount);
+            require(
+                IERC20(_currency).transferFrom(
+                    msg.sender,
+                    address(this),
+                    _amount
+                ),
+                "ERC20 transfer failed"
+            );
         }
 
-        commitments4SolWithdrawal[_commitment] = true;
+        solKnownCommitments[_commitment] = true;
+
+        emit DepositForSolWithdrawal(_commitment);
+    }
+
+    function addCommitmentForEthWithdrawal(
+        uint256 _commitment
+    ) public onlyRole(OPERATOR_ROLE) {
+        ethKnownCommitments[_commitment] = true;
+
+        emit CommitmentAddedForEthWithdrawal(_commitment);
     }
 
     function withdraw(
-        bytes32 _nullifierHash,
         uint[2] calldata _pA,
         uint[2][2] calldata _pB,
         uint[2] calldata _pC,
-        uint[5] calldata _pubSignals,
-        address payable _recipient
+        uint[5] calldata _pubSignals
     ) public nonReentrant {
-        require(_nullifierHash == keccak256(abi.encodePacked(_pubSignals[0])), "Invalid nullifier");
         require(
-            !nullifierHashes4EthWithdrawal[_nullifierHash],
-            "The note has been already spent"
+            ethKnownCommitments[_pubSignals[0]],
+            "Unknown commitment for Ethereum"
         );
+
+        bytes32 nullifierHash = bytes32(_pubSignals[1]);
+        require(
+            !ethUsedNullifiers[nullifierHash],
+            "Nullifier already used for Ethereum"
+        );
+
         require(
             verifier.verifyProof(_pA, _pB, _pC, _pubSignals),
             "Invalid withdraw proof"
         );
-        require(commitments4EthWithdrawal[_pubSignals[0]], "Unknown commitment");
 
-        nullifierHashes4EthWithdrawal[_nullifierHash] = true;
+        ethUsedNullifiers[nullifierHash] = true;
 
-        // Withdraw funds to recipient
-        if (address(uint160(_pubSignals[3])) == address(0)) {
-            _processETHWithdraw(_recipient, _pubSignals[4]);
+        address recipient = address(uint160(_pubSignals[2]));
+        address currency = address(uint160(_pubSignals[3]));
+        uint256 amount = _pubSignals[4];
+
+        if (currency == address(0)) {
+            (bool success, ) = recipient.call{value: amount}("");
+            require(success, "ETH transfer failed");
         } else {
-            _processERC20Withdraw(
-                _recipient,
-                address(uint160(_pubSignals[3])),
-                _pubSignals[4]
+            require(
+                IERC20(currency).transfer(recipient, amount),
+                "ERC20 transfer failed"
             );
         }
     }
 
     function verifySolWithdrawal(
-        bytes32 _nullifierHash,
         uint[2] calldata _pA,
         uint[2][2] calldata _pB,
         uint[2] calldata _pC,
         uint[5] calldata _pubSignals
     ) public view returns (bool verified_) {
-        require(_nullifierHash == keccak256(abi.encodePacked(_pubSignals[0])), "Invalid nullifier");
         require(
-            !nullifierHashes4SolWithdrawal[_nullifierHash],
-            "The note has been already spent"
+            solKnownCommitments[_pubSignals[0]],
+            "Unknown commitment for Solana"
         );
-        require(commitments4SolWithdrawal[_pubSignals[0]], "Unknown commitment");
+
+        bytes32 nullifierHash = bytes32(_pubSignals[1]);
+        require(
+            !solUsedNullifiers[nullifierHash],
+            "Nullifier already used for Solana"
+        );
+
         require(
             verifier.verifyProof(_pA, _pB, _pC, _pubSignals),
             "Invalid withdraw proof"
         );
-    
+
         verified_ = true;
     }
 
-    function addCommitment4ETH(uint256 _commitment) public onlyRole(OPERATOR_ROLE) {
-        commitments4EthWithdrawal[_commitment] = true;
+    function setNullifierForSolWithdrawal(
+        bytes32 _nullifierHash
+    ) public onlyRole(OPERATOR_ROLE) {
+        solUsedNullifiers[_nullifierHash] = true;
     }
 
-    function setNullifierHash4ETH(bytes32 _nullifierHash) public onlyRole(OPERATOR_ROLE) {
-        nullifierHashes4EthWithdrawal[_nullifierHash] = true;
-    }
-
-    function addCommitment4SOL(uint256 _commitment) public onlyRole(OPERATOR_ROLE) {
-        commitments4SolWithdrawal[_commitment] = true;
-    }
-
-    function setNullifierHash4SOL(bytes32 _nullifierHash) public onlyRole(OPERATOR_ROLE) {
-        nullifierHashes4SolWithdrawal[_nullifierHash] = true;
-    }
-
-    function _processETHDeposit(uint256 _amount) internal {
-        require(
-            msg.value >= _amount,
-            "ETH deposit must be greater than or equal to the amount specified or can not be deposit ERC20 token with ETH"
-        );
-    }
-
-    function _processERC20Deposit(address _token, uint256 _amount) internal {
-        // Transfer ERC20 tokens from the user to the mixer contract
-        require(
-            IERC20(_token).transferFrom(msg.sender, address(this), _amount),
-            "ERC20 deposit failed"
-        );
-    }
-
-    function _processETHWithdraw(
-        address payable _recipient,
-        uint256 _amount
-    ) internal {
-        uint256 balance = address(this).balance;
-        require(balance >= _amount, "Insufficient ETH balance in contract");
-        require(
-            msg.value == 0,
-            "Message value is supposed to be zero for ETH instance"
-        );
-
-        (bool success, ) = _recipient.call{value: _amount}(""); // Transfer ETH to recipient
-        require(success, "payment to _recipient did not go thru");
-    }
-
-    function _processERC20Withdraw(
-        address payable _recipient,
-        address _token,
-        uint256 _amount
-    ) internal {
-        uint256 balance = IERC20(_token).balanceOf(address(this));
-        require(balance >= _amount, "Insufficient ERC20 balance in contract");
-        require(
-            IERC20(_token).transfer(_recipient, _amount),
-            "ERC20 withdraw failed"
-        );
-    }
-
-    // To accept ETH directly to the contract
     receive() external payable {}
 }

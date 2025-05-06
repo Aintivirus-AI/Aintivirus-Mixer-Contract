@@ -1,11 +1,21 @@
 // This setup uses Hardhat Ignition to manage smart contract deployments.
 // Learn more about it at https://hardhat.org/ignition
 
+import { ethers } from "hardhat"
 import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
+import { poseidonContract } from "circomlibjs"
 
 const MixerDeployment = buildModule("MixerDeployment", (m) => {
     // get deployer account
     const deployer = m.getAccount(0);
+
+    // deploy poseidon contract with circomlibjs
+    // const nInput = 2
+    // const byteCode = poseidonContract.createCode(nInput)
+    // const abi = poseidonContract.generateABI(nInput)
+
+    // deploy poseidon contract
+    // const poseidon = m.contract("Poseidon", [], { from: deployer });
 
     // deploy verifier contract
     const verifier = m.contract("Groth16Verifier", [], { from: deployer });
