@@ -383,16 +383,17 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
     // Solana Commitment
     mapping(uint256 => bool) public solKnownCommitments;
 
+    enum SolNullifierStatus {
+        UNINITIATED,
+        VERIFYING,
+        COMFIRMED
+    }
     // Nullifier mappings
     mapping(bytes32 => bool) public ethUsedNullifiers;
-    mapping(bytes32 => bool) public solUsedNullifiers;
+    mapping(bytes32 => SolNullifierStatus) public solUsedNullifiers;
 
-    event DepositForSolWithdrawal(
-        uint256 indexed commitment
-    );
-    event CommitmentAddedForEthWithdrawal(
-        uint256 indexed commitment
-    );
+    event DepositForSolWithdrawal(uint256 indexed commitment);
+    event CommitmentAddedForEthWithdrawal(uint256 indexed commitment);
 
     constructor(address _verifier) payable {
         verifier = IGroth16Verifier(_verifier);
@@ -483,22 +484,29 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
         uint[2][2] calldata _pB,
         uint[2] calldata _pC,
         uint[5] calldata _pubSignals
-    ) public view returns (bool verified_) {
+    ) public returns (bool verified_) {
         require(
             solKnownCommitments[_pubSignals[0]],
             "Unknown commitment for Solana"
         );
 
         bytes32 nullifierHash = bytes32(_pubSignals[1]);
-        require(
-            !solUsedNullifiers[nullifierHash],
-            "Nullifier already used for Solana"
-        );
 
         require(
             verifier.verifyProof(_pA, _pB, _pC, _pubSignals),
             "Invalid withdraw proof"
         );
+
+        require(
+            solUsedNullifiers[nullifierHash] != SolNullifierStatus.COMFIRMED,
+            "Nullifier is already spent"
+        );
+        require(
+            solUsedNullifiers[nullifierHash] != SolNullifierStatus.VERIFYING,
+            "Nullifier is under verification"
+        );
+
+        solUsedNullifiers[nullifierHash] = SolNullifierStatus.VERIFYING;
 
         verified_ = true;
     }
@@ -506,7 +514,17 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
     function setNullifierForSolWithdrawal(
         bytes32 _nullifierHash
     ) public onlyRole(OPERATOR_ROLE) {
-        solUsedNullifiers[_nullifierHash] = true;
+        solUsedNullifiers[_nullifierHash] = SolNullifierStatus.COMFIRMED;
+    }
+
+    function revertNullifierForSolWithdrawal(
+        bytes32 _nullifierHash
+    ) public onlyRole(OPERATOR_ROLE) {
+        require(
+            solUsedNullifiers[_nullifierHash] == SolNullifierStatus.VERIFYING,
+            "Nullifier is uninitiated or confirmed"
+        );
+        solUsedNullifiers[_nullifierHash] = SolNullifierStatus.UNINITIATED;
     }
 
     receive() external payable {}
