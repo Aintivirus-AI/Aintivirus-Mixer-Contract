@@ -3,7 +3,7 @@
 
 import { ethers } from "hardhat"
 import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
-import { poseidonContract } from "circomlibjs"
+// import { poseidonContract } from "circomlibjs"
 
 const MixerDeployment = buildModule("MixerDeployment", (m) => {
     // get deployer account
@@ -22,7 +22,7 @@ const MixerDeployment = buildModule("MixerDeployment", (m) => {
     const verifier2 = m.contract("Groth16Verifier2", [], { from: deployer });
 
     // deploy mixer contract
-    const mixer = m.contract("AintiVirusMixer", [verifier1, verifier2, poseidon], { from: deployer });
+    const mixer = m.contract("AintiVirusMixer", [verifier1, verifier2, poseidon, deployer], { from: deployer });
 
     console.log("✅ Contracts deployed by:", deployer);
 

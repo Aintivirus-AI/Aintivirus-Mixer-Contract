@@ -359,6 +359,23 @@ interface IERC20 {
     function balanceOf(address account) external view returns (uint256);
 }
 
+interface IERC20Metadata is IERC20 {
+    /**
+     * @dev Returns the name of the token.
+     */
+    function name() external view returns (string memory);
+
+    /**
+     * @dev Returns the symbol of the token.
+     */
+    function symbol() external view returns (string memory);
+
+    /**
+     * @dev Returns the decimals places of the token.
+     */
+    function decimals() external view returns (uint8);
+}
+
 abstract contract ReentrancyGuard {
     uint256 private constant _NOT_ENTERED = 1;
     uint256 private constant _ENTERED = 2;
@@ -564,6 +581,11 @@ contract AintiVirusMixer is
     IWithdrawalVrifier public verifier;
     IDepositVerifier public depositVerifier;
 
+    address public relayer;
+
+    uint256 public fee; // ERC20 token fee amount for relayer
+    uint256 public refund; // ETH fee amount for relayer
+
     // Ethereum Commitment
     mapping(bytes32 => bool) public ethKnownCommitments;
 
@@ -612,12 +634,19 @@ contract AintiVirusMixer is
     constructor(
         address _depositVerifier,
         address _verifier,
-        address _hasher
+        address _hasher,
+        address _relayer
     ) MerkleTreeWithHistory(20, _hasher) {
         verifier = IWithdrawalVrifier(_verifier);
         depositVerifier = IDepositVerifier(_depositVerifier);
+
+        relayer = _relayer;
+
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(OPERATOR_ROLE, msg.sender);
+
+        fee = 100; // 100 tokens for fee
+        refund = 0.001 ether; // 0.001 ether for fee
     }
 
     function deposit(
@@ -646,10 +675,9 @@ contract AintiVirusMixer is
             "Invalid deposit currency"
         );
 
-        require(
-            _proof.pubSignals[4] == _amount,
-            "Invalid deposit amount"
-        );
+        require(_proof.pubSignals[4] == _amount, "Invalid deposit amount");
+
+        uint256 gasStart = gasleft();
 
         uint32 insertedIndex = insertSOL(_commitment);
         solKnownCommitments[_commitment] = true;
@@ -674,6 +702,9 @@ contract AintiVirusMixer is
                 "ERC20 transfer failed"
             );
         }
+
+        uint256 gasUsed = gasStart - gasleft();
+        refund = gasUsed * tx.gasprice;
 
         emit DepositForSolWithdrawal(
             _commitment,
@@ -702,9 +733,14 @@ contract AintiVirusMixer is
 
     function withdraw(
         bytes32 _root,
-        WithdrawalProof calldata _proof
-    ) public nonReentrant {
+        WithdrawalProof calldata _proof,
+        address _recipient
+    ) public onlyRole(OPERATOR_ROLE) nonReentrant {
         require(isKnownETHRoot(_root), "Unknown merkle root for Ethereum");
+        require(
+            _root == bytes32(_proof.pubSignals[1]),
+            "Merkle root is not matched"
+        );
 
         bytes32 nullifierHash = bytes32(_proof.pubSignals[0]);
         require(
@@ -713,22 +749,48 @@ contract AintiVirusMixer is
         );
 
         require(
-            verifier.verifyProof(_proof.pA, _proof.pB, _proof.pC, _proof.pubSignals),
+            verifier.verifyProof(
+                _proof.pA,
+                _proof.pB,
+                _proof.pC,
+                _proof.pubSignals
+            ),
             "Invalid withdraw proof"
+        );
+
+        require(
+            _recipient == address(uint160(_proof.pubSignals[4])),
+            "Invalid recipient address"
         );
 
         ethUsedNullifiers[nullifierHash] = EthNullifierStatus.CONFIRMED;
 
         address currency = address(uint160(_proof.pubSignals[2]));
         uint256 amount = _proof.pubSignals[3];
-        address recipient = address(uint160(_proof.pubSignals[4]));
 
+        // Withdrawal process
         if (currency == address(0)) {
-            (bool success, ) = recipient.call{value: amount}("");
+            (bool success, ) = _recipient.call{value: amount - refund}("");
             require(success, "ETH transfer failed");
         } else {
+            uint256 feeAmount = fee * (10 ** IERC20Metadata(currency).decimals());
             require(
-                IERC20(currency).transfer(recipient, amount),
+                IERC20(currency).transfer(_recipient, amount - feeAmount),
+                "ERC20 transfer failed"
+            );
+        }
+
+        // Fee transfer process (ETH)
+        if (refund > 0 && currency == address(0)) {
+            (bool success, ) = _recipient.call{value: refund}("");
+            require(success, "ETH transfer failed");
+        }
+
+        // Fee transfer process (ERC20)
+        if (fee > 0 && currency != address(0)) {
+            uint256 feeAmount = fee * (10 ** IERC20Metadata(currency).decimals());
+            require(
+                IERC20(currency).transfer(_recipient, feeAmount),
                 "ERC20 transfer failed"
             );
         }
@@ -737,13 +799,22 @@ contract AintiVirusMixer is
     function verifySolWithdrawal(
         bytes32 _root,
         WithdrawalProof calldata _proof
-    ) public returns (bool verified_) {
+    ) public onlyRole(OPERATOR_ROLE) returns (bool verified_) {
         require(isKnownSOLRoot(_root), "Unknown root for Solana");
+        require(
+            _root == bytes32(_proof.pubSignals[1]),
+            "Merkle root is not matched"
+        );
 
         bytes32 nullifierHash = bytes32(_proof.pubSignals[0]);
 
         require(
-            verifier.verifyProof(_proof.pA, _proof.pB, _proof.pC, _proof.pubSignals),
+            verifier.verifyProof(
+                _proof.pA,
+                _proof.pB,
+                _proof.pC,
+                _proof.pubSignals
+            ),
             "Invalid withdraw proof"
         );
         require(
@@ -774,6 +845,21 @@ contract AintiVirusMixer is
             "Nullifier is uninitiated or confirmed"
         );
         solUsedNullifiers[_nullifierHash] = SolNullifierStatus.UNINITIATED;
+    }
+
+    function setRelayer(address _relayer) external onlyRole(OPERATOR_ROLE) {
+        require(relayer != _relayer, "New relayer must not be same with current relayer");
+        relayer = _relayer;
+    }
+
+    function setRefund(uint256 _refund) external onlyRole(OPERATOR_ROLE) {
+        require(refund != _refund, "New value must not be same with current value");
+        refund = _refund;
+    }
+
+    function setFee(uint256 _fee) external onlyRole(OPERATOR_ROLE) {
+        require(fee != _fee, "New value must not be same with current value");
+        fee = _fee;
     }
 
     receive() external payable {}
