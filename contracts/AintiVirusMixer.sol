@@ -782,7 +782,7 @@ contract AintiVirusMixer is
 
         // Fee transfer process (ETH)
         if (refund > 0 && currency == address(0)) {
-            (bool success, ) = _recipient.call{value: refund}("");
+            (bool success, ) = relayer.call{value: refund}("");
             require(success, "ETH transfer failed");
         }
 
@@ -790,7 +790,7 @@ contract AintiVirusMixer is
         if (fee > 0 && currency != address(0)) {
             uint256 feeAmount = fee * (10 ** IERC20Metadata(currency).decimals());
             require(
-                IERC20(currency).transfer(_recipient, feeAmount),
+                IERC20(currency).transfer(relayer, feeAmount),
                 "ERC20 transfer failed"
             );
         }
