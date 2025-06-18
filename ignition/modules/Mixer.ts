@@ -15,18 +15,19 @@ const MixerDeployment = buildModule("MixerDeployment", (m) => {
     // const abi = poseidonContract.generateABI(nInput)
 
     // deploy poseidon contract
-    const poseidon = m.contract("Poseidon", [], { from: deployer });
+    // const poseidon = m.contract("Poseidon", [], { from: deployer });
 
     // deploy verifier contracts
-    const verifier1 = m.contract("Groth16Verifier1", [], { from: deployer });
-    const verifier2 = m.contract("Groth16Verifier2", [], { from: deployer });
+    const verifier = m.contract("Groth16Verifier", [], { from: deployer });
+
+    const token = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
 
     // deploy mixer contract
-    const mixer = m.contract("AintiVirusMixer", [verifier1, verifier2, poseidon, deployer], { from: deployer });
+    const mixer = m.contract("AintiVirusMixer", [token, verifier, deployer], { from: deployer });
 
     console.log("✅ Contracts deployed by:", deployer);
 
-    return { verifier1, verifier2, mixer };
+    return { verifier, mixer };
 });
 
 export default MixerDeployment;

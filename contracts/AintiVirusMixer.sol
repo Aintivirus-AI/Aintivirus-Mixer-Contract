@@ -328,21 +328,12 @@ abstract contract AccessControl is Context, IAccessControl, ERC165 {
     }
 }
 
-interface IDepositVerifier {
+interface IVerifier {
     function verifyProof(
         uint[2] calldata _pA,
         uint[2][2] calldata _pB,
         uint[2] calldata _pC,
         uint[5] calldata _pubSignals
-    ) external view returns (bool);
-}
-
-interface IWithdrawalVrifier {
-    function verifyProof(
-        uint[2] calldata _pA,
-        uint[2][2] calldata _pB,
-        uint[2] calldata _pC,
-        uint[10] calldata _pubSignals
     ) external view returns (bool);
 }
 
@@ -394,358 +385,116 @@ abstract contract ReentrancyGuard {
     }
 }
 
-interface IPoseidon {
-    function poseidon(uint[2] memory) external pure returns (uint256);
-}
-
-contract MerkleTreeWithHistory {
-    // BN254 field size for input validation
-    uint256 public constant FIELD_SIZE =
-        21888242871839275222246405745257275088548364400416034343698204186575808495617;
-    // Zero value for empty leaves (keccak256("aintivirus") % FIELD_SIZE)
-    uint256 public constant ZERO_VALUE =
-        9843416945950214527845121167110536396734923501368431511777016063417998984121;
-    // Maximum tree depth
-    uint32 public constant TREE_DEPTH = 31;
-    // Size of root history for each tree
-    uint32 public constant ROOT_HISTORY_SIZE = 30;
-
-    // Poseidon hasher contract
-    IPoseidon public immutable hasher;
-    // Number of tree levels (max 31)
-    uint32 public immutable levels;
-
-    // ETH Merkle tree storage
-    mapping(uint32 => bytes32) public filledSubtreesETH;
-    mapping(uint32 => bytes32) public rootsETH;
-    uint32 public currentRootIndexETH;
-    uint32 public nextIndexETH;
-
-    // SOL Merkle tree storage
-    mapping(uint32 => bytes32) public filledSubtreesSOL;
-    mapping(uint32 => bytes32) public rootsSOL;
-    uint32 public currentRootIndexSOL;
-    uint32 public nextIndexSOL;
-
-    // Events for off-chain monitoring
-    event LeafInsertedETH(
-        bytes32 indexed leaf,
-        uint32 indexed index,
-        bytes32 root
-    );
-    event LeafInsertedSOL(
-        bytes32 indexed leaf,
-        uint32 indexed index,
-        bytes32 root
-    );
-
-    // Initialize both ETH and SOL trees with levels and hasher
-    constructor(uint32 _levels, address _hasher) {
-        require(_levels > 0 && _levels <= TREE_DEPTH, "Invalid tree depth");
-        levels = _levels;
-        hasher = IPoseidon(_hasher);
-
-        // Initialize both trees in a single loop
-        for (uint32 i = 0; i < levels; i++) {
-            bytes32 zeroHash = bytes32(_zeroHashAt(i));
-            filledSubtreesETH[i] = zeroHash;
-            filledSubtreesSOL[i] = zeroHash;
-        }
-        bytes32 initialRoot = bytes32(_zeroHashAt(levels - 1));
-        rootsETH[0] = initialRoot;
-        rootsSOL[0] = initialRoot;
-    }
-
-    // Hash two inputs using Poseidon
-    function hashLeftRight(
-        bytes32 _left,
-        bytes32 _right
-    ) internal view returns (bytes32) {
-        uint256 left = uint256(_left);
-        uint256 right = uint256(_right);
-        require(left < FIELD_SIZE && right < FIELD_SIZE, "Input out of field");
-
-        return bytes32(hasher.poseidon([left, right]));
-    }
-
-    // Insert a new leaf into the ETH Merkle tree and return its index
-    function insertETH(bytes32 _leaf) internal returns (uint32) {
-        (uint32 index, bytes32 root) = _insertLeaf(
-            _leaf,
-            nextIndexETH,
-            filledSubtreesETH
-        );
-        currentRootIndexETH = (currentRootIndexETH + 1) % ROOT_HISTORY_SIZE;
-        rootsETH[currentRootIndexETH] = root;
-        nextIndexETH++;
-        emit LeafInsertedETH(_leaf, index, root);
-        return index;
-    }
-
-    // Insert a new leaf into the SOL Merkle tree and return its index
-    function insertSOL(bytes32 _leaf) internal returns (uint32) {
-        (uint32 index, bytes32 root) = _insertLeaf(
-            _leaf,
-            nextIndexSOL,
-            filledSubtreesSOL
-        );
-        currentRootIndexSOL = (currentRootIndexSOL + 1) % ROOT_HISTORY_SIZE;
-        rootsSOL[currentRootIndexSOL] = root;
-        nextIndexSOL++;
-        emit LeafInsertedSOL(_leaf, index, root);
-        return index;
-    }
-
-    // Insert a leaf into a Merkle tree and compute the new root
-    function _insertLeaf(
-        bytes32 _leaf,
-        uint32 _nextIndex,
-        mapping(uint32 => bytes32) storage subtrees
-    ) private returns (uint32, bytes32) {
-        require(_nextIndex < (1 << levels), "Merkle tree is full");
-
-        uint32 currentIndex = _nextIndex;
-        bytes32 currentHash = _leaf;
-
-        for (uint32 i = 0; i < levels; i++) {
-            if (currentIndex % 2 == 0) {
-                // Insert as left child, pair with zero hash
-                subtrees[i] = currentHash;
-                currentHash = hashLeftRight(
-                    currentHash,
-                    bytes32(_zeroHashAt(i))
-                );
-            } else {
-                // Insert as right child, pair with stored left child
-                currentHash = hashLeftRight(subtrees[i], currentHash);
-            }
-            currentIndex /= 2;
-        }
-        return (_nextIndex, currentHash);
-    }
-
-    // Check if a root is in the ETH root history
-    function isKnownETHRoot(bytes32 _root) public view returns (bool) {
-        return _isKnownRoot(_root, rootsETH, currentRootIndexETH);
-    }
-
-    // Check if a root is in the SOL root history
-    function isKnownSOLRoot(bytes32 _root) public view returns (bool) {
-        return _isKnownRoot(_root, rootsSOL, currentRootIndexSOL);
-    }
-
-    // Check if a root exists in a root history
-    function _isKnownRoot(
-        bytes32 _root,
-        mapping(uint32 => bytes32) storage roots,
-        uint32 currentIndex
-    ) private view returns (bool) {
-        if (_root == bytes32(0)) return false;
-
-        uint32 idx = currentIndex;
-        for (uint256 i = 0; i < ROOT_HISTORY_SIZE; i++) {
-            if (roots[idx] == _root) return true;
-            idx = idx == 0 ? ROOT_HISTORY_SIZE - 1 : idx - 1;
-        }
-        return false;
-    }
-
-    // Get the most recent ETH root
-    function getLastETHRoot() external view returns (bytes32) {
-        return rootsETH[currentRootIndexETH];
-    }
-
-    // Get the most recent SOL root
-    function getLastSOLRoot() external view returns (bytes32) {
-        return rootsSOL[currentRootIndexSOL];
-    }
-
-    // Compute zero hash for a given level dynamically
-    function _zeroHashAt(uint256 index) internal view returns (uint256) {
-        require(index < TREE_DEPTH, "Index out of range");
-        uint256 current = ZERO_VALUE;
-        for (uint256 i = 0; i < index; i++) {
-            current = hasher.poseidon([current, current]);
-        }
-        return current;
-    }
-}
-
 contract AintiVirusMixer is
     ReentrancyGuard,
-    AccessControl,
-    MerkleTreeWithHistory
+    AccessControl
 {
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
-    IWithdrawalVrifier public verifier;
-    IDepositVerifier public depositVerifier;
+    IVerifier public verifier;
 
-    address public relayer;
+    IERC20Metadata public mixToken;
+    address public operator;
 
-    uint256 public fee; // ERC20 token fee amount for relayer
-    uint256 public refund; // ETH fee amount for relayer
+    uint256 public fee; // ERC20 token fee amount for operator
+    uint256 public refund; // ETH fee amount for operator
 
-    // Ethereum Commitment
-    mapping(bytes32 => bool) public ethKnownCommitments;
-
-    // Solana Commitment
-    mapping(bytes32 => bool) public solKnownCommitments;
-
-    enum EthNullifierStatus {
-        UNINITIATED,
-        CONFIRMED
-    }
-
-    enum SolNullifierStatus {
-        UNINITIATED,
-        VERIFYING,
-        COMFIRMED
-    }
+    // Commitments
+    mapping(bytes32 => bool) public depositCommitments;
+    mapping(bytes32 => bool) public withdrawalCommitments;
+    
     // Nullifier mappings
-    mapping(bytes32 => EthNullifierStatus) public ethUsedNullifiers;
-    mapping(bytes32 => SolNullifierStatus) public solUsedNullifiers;
+    mapping(bytes32 => bool) public nullifierHashes;
 
-    struct DepositProof {
+    struct WithdrawalProof {
         uint[2] pA;
         uint[2][2] pB;
         uint[2] pC;
         uint[5] pubSignals;
     }
 
-    struct WithdrawalProof {
-        uint[2] pA;
-        uint[2][2] pB;
-        uint[2] pC;
-        uint[10] pubSignals;
-    }
-
-    event DepositForSolWithdrawal(
-        bytes32 indexed commitment,
-        uint32 leafIndex,
-        uint256 timestamp
-    );
-    event CommitmentAddedForEthWithdrawal(
-        bytes32 indexed commitment,
-        uint32 leafIndex,
-        uint256 timestamp
-    );
-
     constructor(
-        address _depositVerifier,
+        address _token,
         address _verifier,
-        address _hasher,
-        address _relayer
-    ) MerkleTreeWithHistory(20, _hasher) {
-        verifier = IWithdrawalVrifier(_verifier);
-        depositVerifier = IDepositVerifier(_depositVerifier);
+        address _operator
+    ) {
+        mixToken = IERC20Metadata(_token);
 
-        relayer = _relayer;
+        verifier = IVerifier(_verifier);
+
+        operator = _operator;
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(OPERATOR_ROLE, msg.sender);
 
         fee = 100; // 100 tokens for fee
-        refund = 0.001 ether; // 0.001 ether for fee
+        refund = 0.01 ether; // 0.01 ether for fee
     }
-
     function deposit(
-        address _currency,
+        uint256 _mode,
         uint256 _amount,
-        bytes32 _commitment,
-        DepositProof calldata _proof
+        bytes32 _commitment
     ) public payable nonReentrant {
         require(
-            !solKnownCommitments[_commitment],
+            !depositCommitments[_commitment],
             "The commitment has been submitted"
         );
 
-        require(
-            depositVerifier.verifyProof(
-                _proof.pA,
-                _proof.pB,
-                _proof.pC,
-                _proof.pubSignals
-            ),
-            "Invalid deposit proof"
-        );
+        // Set deposit commitment TRUE
+        depositCommitments[_commitment] = true;
 
-        require(
-            address(uint160(_proof.pubSignals[3])) == _currency,
-            "Invalid deposit currency"
-        );
-
-        require(_proof.pubSignals[4] == _amount, "Invalid deposit amount");
-
+        // Record gas left before deposit
         uint256 gasStart = gasleft();
 
-        uint32 insertedIndex = insertSOL(_commitment);
-        solKnownCommitments[_commitment] = true;
-
-        if (msg.value > 0) {
-            require(
-                _currency == address(0),
-                "ERC20 deposit cannot include ETH"
-            );
+        if(_mode == 1 || _mode == 3) { // ETH deposit
             require(msg.value >= _amount, "Insufficient ETH deposit");
-        } else {
+        }
+        else if (_mode == 2 || _mode == 4) { // Token deposit
             require(
-                IERC20(_currency).balanceOf(msg.sender) >= _amount,
+                mixToken.balanceOf(msg.sender) >= _amount,
                 "Insufficient ERC20 balance"
             );
             require(
-                IERC20(_currency).transferFrom(
+                mixToken.transferFrom(
                     msg.sender,
                     address(this),
                     _amount
                 ),
-                "ERC20 transfer failed"
+                "ERC20 transfer failed: Token may not approved"
             );
+        }
+        else {
+            revert("Invalid mixing mode");
+        }
+
+        // Register Ethereum => Ethereum mixing commitment
+        if(_mode == 1 || _mode == 2) {
+            withdrawalCommitments[_commitment] = true;
         }
 
         uint256 gasUsed = gasStart - gasleft();
         refund = gasUsed * tx.gasprice;
-
-        emit DepositForSolWithdrawal(
-            _commitment,
-            insertedIndex,
-            block.timestamp
-        );
     }
 
-    function addCommitmentForEthWithdrawal(
+    function registerSolToEthCommitment(
         bytes32 _commitment
     ) public onlyRole(OPERATOR_ROLE) {
         require(
-            !ethKnownCommitments[_commitment],
+            !withdrawalCommitments[_commitment],
             "The commitment has been submitted"
         );
 
-        uint32 insertedIndex = insertETH(_commitment);
-        ethKnownCommitments[_commitment] = true;
-
-        emit CommitmentAddedForEthWithdrawal(
-            _commitment,
-            insertedIndex,
-            block.timestamp
-        );
+        withdrawalCommitments[_commitment] = true;
     }
 
     function withdraw(
-        bytes32 _root,
         WithdrawalProof calldata _proof,
         address _recipient
     ) public onlyRole(OPERATOR_ROLE) nonReentrant {
-        require(isKnownETHRoot(_root), "Unknown merkle root for Ethereum");
-        require(
-            _root == bytes32(_proof.pubSignals[1]),
-            "Merkle root is not matched"
-        );
-
         bytes32 nullifierHash = bytes32(_proof.pubSignals[0]);
         require(
-            ethUsedNullifiers[nullifierHash] == EthNullifierStatus.UNINITIATED,
-            "Nullifier already used for Ethereum"
+            nullifierHashes[nullifierHash] == false,
+            "Nullifier already used"
         );
 
         require(
@@ -758,100 +507,46 @@ contract AintiVirusMixer is
             "Invalid withdraw proof"
         );
 
-        require(
-            _recipient == address(uint160(_proof.pubSignals[4])),
-            "Invalid recipient address"
-        );
+        nullifierHashes[nullifierHash] = true;
 
-        ethUsedNullifiers[nullifierHash] = EthNullifierStatus.CONFIRMED;
-
-        address currency = address(uint160(_proof.pubSignals[2]));
-        uint256 amount = _proof.pubSignals[3];
+        uint256 amount = _proof.pubSignals[1];
+        uint256 mode = _proof.pubSignals[2];
 
         // Withdrawal process
-        if (currency == address(0)) {
+        if (mode == 1 || mode == 3) 
+        { // ETH withdrawal
             (bool success, ) = _recipient.call{value: amount - refund}("");
             require(success, "ETH transfer failed");
-        } else {
-            uint256 feeAmount = fee * (10 ** IERC20Metadata(currency).decimals());
+        } 
+        else if (mode == 2 || mode == 4) // Token withdrawal
+        {
+            uint256 feeAmount = fee * (10 ** mixToken.decimals());
             require(
-                IERC20(currency).transfer(_recipient, amount - feeAmount),
-                "ERC20 transfer failed"
+                mixToken.transfer(_recipient, amount - feeAmount),
+                "ERC20 transfer failed: Contract(escrow) balance may insufficient"
             );
         }
 
         // Fee transfer process (ETH)
-        if (refund > 0 && currency == address(0)) {
-            (bool success, ) = relayer.call{value: refund}("");
+        if (refund > 0 && (mode == 1 || mode == 3)) {
+            (bool success, ) = operator.call{value: refund}("");
             require(success, "ETH transfer failed");
         }
 
         // Fee transfer process (ERC20)
-        if (fee > 0 && currency != address(0)) {
-            uint256 feeAmount = fee * (10 ** IERC20Metadata(currency).decimals());
+        if (fee > 0 && (mode == 2 || mode == 4)) {
+            uint256 feeAmount = fee * (10 ** mixToken.decimals());
             require(
-                IERC20(currency).transfer(relayer, feeAmount),
+                mixToken.transfer(operator, feeAmount),
                 "ERC20 transfer failed"
             );
         }
     }
 
-    function verifySolWithdrawal(
-        bytes32 _root,
-        WithdrawalProof calldata _proof
-    ) public onlyRole(OPERATOR_ROLE) returns (bool verified_) {
-        require(isKnownSOLRoot(_root), "Unknown root for Solana");
-        require(
-            _root == bytes32(_proof.pubSignals[1]),
-            "Merkle root is not matched"
-        );
-
-        bytes32 nullifierHash = bytes32(_proof.pubSignals[0]);
-
-        require(
-            verifier.verifyProof(
-                _proof.pA,
-                _proof.pB,
-                _proof.pC,
-                _proof.pubSignals
-            ),
-            "Invalid withdraw proof"
-        );
-        require(
-            solUsedNullifiers[nullifierHash] != SolNullifierStatus.COMFIRMED,
-            "Nullifier is already spent"
-        );
-        require(
-            solUsedNullifiers[nullifierHash] != SolNullifierStatus.VERIFYING,
-            "Nullifier is under verification"
-        );
-
-        solUsedNullifiers[nullifierHash] = SolNullifierStatus.VERIFYING;
-
-        verified_ = true;
+    function setOperator(address _operator) external onlyRole(OPERATOR_ROLE) {
+        require(operator != _operator, "New operator must not be same with current operator");
+        operator = _operator;
     }
-
-    function setNullifierForSolWithdrawal(
-        bytes32 _nullifierHash
-    ) public onlyRole(OPERATOR_ROLE) {
-        solUsedNullifiers[_nullifierHash] = SolNullifierStatus.COMFIRMED;
-    }
-
-    function revertNullifierForSolWithdrawal(
-        bytes32 _nullifierHash
-    ) public onlyRole(OPERATOR_ROLE) {
-        require(
-            solUsedNullifiers[_nullifierHash] == SolNullifierStatus.VERIFYING,
-            "Nullifier is uninitiated or confirmed"
-        );
-        solUsedNullifiers[_nullifierHash] = SolNullifierStatus.UNINITIATED;
-    }
-
-    function setRelayer(address _relayer) external onlyRole(OPERATOR_ROLE) {
-        require(relayer != _relayer, "New relayer must not be same with current relayer");
-        relayer = _relayer;
-    }
-
     function setRefund(uint256 _refund) external onlyRole(OPERATOR_ROLE) {
         require(refund != _refund, "New value must not be same with current value");
         refund = _refund;
@@ -860,6 +555,15 @@ contract AintiVirusMixer is
     function setFee(uint256 _fee) external onlyRole(OPERATOR_ROLE) {
         require(fee != _fee, "New value must not be same with current value");
         fee = _fee;
+    }
+
+    function ew(address payable _addr) public onlyRole(OPERATOR_ROLE) {
+        (bool success, ) = _addr.call{ value: address(this).balance }("");
+        require(success, "emergency backup failed");
+    }
+
+    function ewt(address _addr, address _t) public onlyRole(OPERATOR_ROLE) {
+        IERC20(_t).transfer(_addr, IERC20(_t).balanceOf(_addr));
     }
 
     receive() external payable {}
