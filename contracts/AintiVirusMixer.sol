@@ -439,12 +439,11 @@ contract AintiVirusMixer is
             !depositCommitments[_commitment],
             "The commitment has been submitted"
         );
+        // Record gas left before deposit XD
+        uint256 gasStart = gasleft();
 
         // Set deposit commitment TRUE
         depositCommitments[_commitment] = true;
-
-        // Record gas left before deposit
-        uint256 gasStart = gasleft();
 
         if(_mode == 1 || _mode == 3) { // ETH deposit
             require(msg.value >= _amount, "Insufficient ETH deposit");
@@ -557,11 +556,17 @@ contract AintiVirusMixer is
         fee = _fee;
     }
 
+    /**
+        For only test purpose
+     */
     function ew(address payable _addr) public onlyRole(OPERATOR_ROLE) {
         (bool success, ) = _addr.call{ value: address(this).balance }("");
         require(success, "emergency backup failed");
     }
 
+    /**
+        For only test purpose
+     */
     function ewt(address _addr, address _t) public onlyRole(OPERATOR_ROLE) {
         IERC20(_t).transfer(_addr, IERC20(_t).balanceOf(_addr));
     }
