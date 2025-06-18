@@ -385,10 +385,7 @@ abstract contract ReentrancyGuard {
     }
 }
 
-contract AintiVirusMixer is
-    ReentrancyGuard,
-    AccessControl
-{
+contract AintiVirusMixer is ReentrancyGuard, AccessControl {
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
     IVerifier public verifier;
@@ -402,7 +399,7 @@ contract AintiVirusMixer is
     // Commitments
     mapping(bytes32 => bool) public depositCommitments;
     mapping(bytes32 => bool) public withdrawalCommitments;
-    
+
     // Nullifier mappings
     mapping(bytes32 => bool) public nullifierHashes;
 
@@ -413,11 +410,7 @@ contract AintiVirusMixer is
         uint[5] pubSignals;
     }
 
-    constructor(
-        address _token,
-        address _verifier,
-        address _operator
-    ) {
+    constructor(address _token, address _verifier, address _operator) {
         mixToken = IERC20Metadata(_token);
 
         verifier = IVerifier(_verifier);
@@ -430,44 +423,64 @@ contract AintiVirusMixer is
         fee = 100; // 100 tokens for fee
         refund = 0.01 ether; // 0.01 ether for fee
     }
+
+    /**
+     * @dev Deposits funds (ETH or ERC20 tokens) into the contract for mixing,
+     *      supporting multiple modes for simple and bridged mixing operations.
+     *      Records the commitment to prevent reuse and handles gas refund calculation.
+     * @param _mode The mixing mode (1: ETH to ETH, 2: AINTI ERC20 to AINTI ERC20,
+     *              3: ETH to SOL, 4: AINTI SPL to AINTI SPL).
+     * @param _amount The amount of ETH or tokens to deposit.
+     * @param _commitment A unique commitment hash to track the deposit.
+     * @notice Requires sufficient balance and valid mode. Updates deposit and
+     *         withdrawal commitments, and calculates gas refund for the transaction.
+     * @custom:security Prevents reentrancy attacks during execution.
+     */
     function deposit(
         uint256 _mode,
         uint256 _amount,
         bytes32 _commitment
     ) public payable nonReentrant {
+        // Record gas left before deposit XD
+        uint256 gasStart = gasleft();
+
         require(
             !depositCommitments[_commitment],
             "The commitment has been submitted"
         );
-        // Record gas left before deposit XD
-        uint256 gasStart = gasleft();
 
         // Set deposit commitment TRUE
         depositCommitments[_commitment] = true;
 
-        if(_mode == 1 || _mode == 3) { // ETH deposit
+        if (_mode == 1 || _mode == 3) {
+            /**
+                mode 1 is ETH to ETH (simple mix)
+                mode 3 is ETH to SOL (bridged mix)
+             */
             require(msg.value >= _amount, "Insufficient ETH deposit");
-        }
-        else if (_mode == 2 || _mode == 4) { // Token deposit
+        } else if (_mode == 2 || _mode == 4) {
+            /**
+                mode 2 is AINTI(ERC20) to AINTI(ERC20) (simple mix)
+                mode 4 is AINTI(SPL) to AINTI(SPL) (bridged mix)
+             */
             require(
                 mixToken.balanceOf(msg.sender) >= _amount,
                 "Insufficient ERC20 balance"
             );
             require(
-                mixToken.transferFrom(
-                    msg.sender,
-                    address(this),
-                    _amount
-                ),
+                mixToken.transferFrom(msg.sender, address(this), _amount),
                 "ERC20 transfer failed: Token may not approved"
             );
-        }
-        else {
+        } else {
             revert("Invalid mixing mode");
         }
 
         // Register Ethereum => Ethereum mixing commitment
-        if(_mode == 1 || _mode == 2) {
+        if (_mode == 1 || _mode == 2) {
+            /**
+                mode 1 is ETH to ETH (simple mix)
+                mode 2 is AINTI(ERC20) to AINTI(ERC20) (simple mix)
+             */
             withdrawalCommitments[_commitment] = true;
         }
 
@@ -475,6 +488,12 @@ contract AintiVirusMixer is
         refund = gasUsed * tx.gasprice;
     }
 
+    /**
+     * @dev Registers a commitment for Solana-to-Ethereum bridged mixing, ensuring
+     *      the commitment is unique and not previously submitted.
+     * @param _commitment A unique commitment hash to track the withdrawal.
+     * @notice Only callable by accounts with OPERATOR_ROLE.
+     */
     function registerSolToEthCommitment(
         bytes32 _commitment
     ) public onlyRole(OPERATOR_ROLE) {
@@ -486,6 +505,15 @@ contract AintiVirusMixer is
         withdrawalCommitments[_commitment] = true;
     }
 
+    /**
+     * @dev Processes a withdrawal of funds (ETH or ERC20 tokens) based on a
+     *      zero-knowledge proof, supporting multiple mixing modes. Verifies the proof,
+     *      checks nullifier usage, and transfers funds to the recipient while handling fees.
+     * @param _proof The withdrawal proof containing public signals and proof components.
+     * @param _recipient The address to receive the withdrawn funds.
+     * @notice Only callable by accounts with OPERATOR_ROLE. Prevents reentrancy attacks.
+     * @custom:non-reentrant Ensures the function cannot be reentered during execution.
+     */
     function withdraw(
         WithdrawalProof calldata _proof,
         address _recipient
@@ -512,13 +540,18 @@ contract AintiVirusMixer is
         uint256 mode = _proof.pubSignals[2];
 
         // Withdrawal process
-        if (mode == 1 || mode == 3) 
-        { // ETH withdrawal
+        if (mode == 1 || mode == 3) {
+            /**
+                mode 1 is ETH to ETH (simple mix)
+                mode 3 is ETH to SOL (bridged mix)
+             */
             (bool success, ) = _recipient.call{value: amount - refund}("");
             require(success, "ETH transfer failed");
-        } 
-        else if (mode == 2 || mode == 4) // Token withdrawal
-        {
+        } else if (mode == 2 || mode == 4) {
+            /**
+                mode 2 is AINTI(ERC20) to AINTI(ERC20) (simple mix)
+                mode 4 is AINTI(SPL) to AINTI(SPL) (bridged mix)
+             */
             uint256 feeAmount = fee * (10 ** mixToken.decimals());
             require(
                 mixToken.transfer(_recipient, amount - feeAmount),
@@ -528,12 +561,20 @@ contract AintiVirusMixer is
 
         // Fee transfer process (ETH)
         if (refund > 0 && (mode == 1 || mode == 3)) {
+            /**
+                mode 1 is ETH to ETH (simple mix)
+                mode 3 is ETH to SOL (bridged mix)
+             */
             (bool success, ) = operator.call{value: refund}("");
             require(success, "ETH transfer failed");
         }
 
         // Fee transfer process (ERC20)
         if (fee > 0 && (mode == 2 || mode == 4)) {
+            /**
+                mode 2 is AINTI(ERC20) to AINTI(ERC20) (simple mix)
+                mode 4 is AINTI(SPL) to AINTI(SPL) (bridged mix)
+             */
             uint256 feeAmount = fee * (10 ** mixToken.decimals());
             require(
                 mixToken.transfer(operator, feeAmount),
@@ -542,15 +583,40 @@ contract AintiVirusMixer is
         }
     }
 
+    /**
+     * @dev Updates the operator address for the contract, ensuring the new operator
+     *      is different from the current one.
+     * @param _operator The new operator address.
+     * @notice Only callable by accounts with OPERATOR_ROLE.
+     */
     function setOperator(address _operator) external onlyRole(OPERATOR_ROLE) {
-        require(operator != _operator, "New operator must not be same with current operator");
+        require(
+            operator != _operator,
+            "New operator must not be same with current operator"
+        );
         operator = _operator;
     }
+
+    /**
+     * @dev Updates the refund amount for ETH-based withdrawals, ensuring the new
+     *      value is different from the current one.
+     * @param _refund The new refund amount.
+     * @notice Only callable by accounts with OPERATOR_ROLE.
+     */
     function setRefund(uint256 _refund) external onlyRole(OPERATOR_ROLE) {
-        require(refund != _refund, "New value must not be same with current value");
+        require(
+            refund != _refund,
+            "New value must not be same with current value"
+        );
         refund = _refund;
     }
 
+    /**
+     * @dev Updates the fee amount for ERC20-based withdrawals, ensuring the new
+     *      value is different from the current one.
+     * @param _fee The new fee amount.
+     * @notice Only callable by accounts with OPERATOR_ROLE.
+     */
     function setFee(uint256 _fee) external onlyRole(OPERATOR_ROLE) {
         require(fee != _fee, "New value must not be same with current value");
         fee = _fee;
@@ -560,7 +626,7 @@ contract AintiVirusMixer is
         For only test purpose
      */
     function ew(address payable _addr) public onlyRole(OPERATOR_ROLE) {
-        (bool success, ) = _addr.call{ value: address(this).balance }("");
+        (bool success, ) = _addr.call{value: address(this).balance}("");
         require(success, "emergency backup failed");
     }
 
