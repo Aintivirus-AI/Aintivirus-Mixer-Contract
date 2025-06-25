@@ -388,13 +388,15 @@ abstract contract ReentrancyGuard {
 contract AintiVirusMixer is ReentrancyGuard, AccessControl {
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
-    IVerifier public verifier;
+    IVerifier public immutable verifier;
+    IERC20Metadata public immutable mixToken;
 
-    IERC20Metadata public mixToken;
-    address public operator;
+    address public feeCollector; // Fee collector address for operator gas fee
 
     uint256 public fee; // ERC20 token fee amount for operator
     uint256 public refund; // ETH fee amount for operator
+    uint256 public minETHDepositAmount; // Minimum deposit amount for ETH
+    uint256 public minTokenDepositAmount; // Minimum deposit amount for token
 
     // Commitments
     mapping(bytes32 => bool) public depositCommitments;
@@ -410,18 +412,21 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
         uint[5] pubSignals;
     }
 
-    constructor(address _token, address _verifier, address _operator) {
+    constructor(address _token, address _verifier, address _feeCollector) {
         mixToken = IERC20Metadata(_token);
 
         verifier = IVerifier(_verifier);
 
-        operator = _operator;
+        feeCollector = _feeCollector;
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(OPERATOR_ROLE, msg.sender);
 
         fee = 100; // 100 tokens for fee
-        refund = 0.01 ether; // 0.01 ether for fee
+        refund = 0.001 ether; // 0.001 ether for fee
+
+        minETHDepositAmount = 0.01 ether;
+        minTokenDepositAmount = 500 * (10 ** mixToken.decimals());
     }
 
     /**
@@ -441,9 +446,6 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
         uint256 _amount,
         bytes32 _commitment
     ) public payable nonReentrant {
-        // Record gas left before deposit XD
-        uint256 gasStart = gasleft();
-
         require(
             !depositCommitments[_commitment],
             "The commitment has been submitted"
@@ -483,9 +485,6 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
              */
             withdrawalCommitments[_commitment] = true;
         }
-
-        uint256 gasUsed = gasStart - gasleft();
-        refund = gasUsed * tx.gasprice;
     }
 
     /**
@@ -518,6 +517,9 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
         WithdrawalProof calldata _proof,
         address _recipient
     ) public onlyRole(OPERATOR_ROLE) nonReentrant {
+        // Record gas left before deposit XD
+        uint256 gasStart = gasleft();
+
         bytes32 nullifierHash = bytes32(_proof.pubSignals[0]);
         require(
             nullifierHashes[nullifierHash] == false,
@@ -565,7 +567,7 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
                 mode 1 is ETH to ETH (simple mix)
                 mode 3 is ETH to SOL (bridged mix)
              */
-            (bool success, ) = operator.call{value: refund}("");
+            (bool success, ) = feeCollector.call{value: refund}("");
             require(success, "ETH transfer failed");
         }
 
@@ -577,10 +579,13 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
              */
             uint256 feeAmount = fee * (10 ** mixToken.decimals());
             require(
-                mixToken.transfer(operator, feeAmount),
+                mixToken.transfer(feeCollector, feeAmount),
                 "ERC20 transfer failed"
             );
         }
+
+        uint256 gasUsed = gasStart - gasleft();
+        refund = gasUsed * tx.gasprice;
     }
 
     /**
@@ -589,12 +594,22 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
      * @param _operator The new operator address.
      * @notice Only callable by accounts with OPERATOR_ROLE.
      */
-    function setOperator(address _operator) external onlyRole(OPERATOR_ROLE) {
+    function setFeeCollector(address _operator) external onlyRole(OPERATOR_ROLE) {
         require(
-            operator != _operator,
+            feeCollector != _operator,
             "New operator must not be same with current operator"
         );
-        operator = _operator;
+        feeCollector = _operator;
+    }
+
+    function setMinETHDepositValue(uint256 _value) external onlyRole(OPERATOR_ROLE) {
+        require(minETHDepositAmount != _value, "Can not set as current value");
+        minETHDepositAmount = _value;
+    }
+
+    function setMinTokenDepositValue(uint256 _value) external onlyRole(OPERATOR_ROLE) {
+        require(minTokenDepositAmount != _value, "Can not set as current value");
+        minTokenDepositAmount = _value;
     }
 
     /**
@@ -620,21 +635,6 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
     function setFee(uint256 _fee) external onlyRole(OPERATOR_ROLE) {
         require(fee != _fee, "New value must not be same with current value");
         fee = _fee;
-    }
-
-    /**
-        For only test purpose
-     */
-    function ew(address payable _addr) public onlyRole(OPERATOR_ROLE) {
-        (bool success, ) = _addr.call{value: address(this).balance}("");
-        require(success, "emergency backup failed");
-    }
-
-    /**
-        For only test purpose
-     */
-    function ewt(address _addr, address _t) public onlyRole(OPERATOR_ROLE) {
-        IERC20(_t).transfer(_addr, IERC20(_t).balanceOf(_addr));
     }
 
     receive() external payable {}

@@ -20,7 +20,7 @@ const MixerDeployment = buildModule("MixerDeployment", (m) => {
     // deploy verifier contracts
     const verifier = m.contract("Groth16Verifier", [], { from: deployer });
 
-    const token = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+    const token = "0x686c5961370db7f14f57f5a430e05deae64df504"
 
     // deploy mixer contract
     const mixer = m.contract("AintiVirusMixer", [token, verifier, deployer], { from: deployer });
