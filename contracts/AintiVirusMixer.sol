@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/Address.sol";
 
 interface IVerifier {
     function verifyProof(
@@ -17,6 +18,8 @@ interface IVerifier {
 }
 
 contract AintiVirusMixer is ReentrancyGuard, AccessControl {
+    using Address for address;
+    using Address for address payable;
     using SafeERC20 for IERC20;
 
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
@@ -24,7 +27,7 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
     IVerifier public immutable verifier;
     IERC20Metadata public immutable mixToken;
 
-    address public feeCollector; // Fee collector address for operator gas fee
+    address payable public feeCollector; // Fee collector address for operator gas fee
 
     uint256 public fee; // ERC20 token fee amount for operator
     uint256 public refund; // ETH fee amount for operator
@@ -45,7 +48,7 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
         uint[5] pubSignals;
     }
 
-    constructor(address _token, address _verifier, address _feeCollector) {
+    constructor(address _token, address _verifier, address payable _feeCollector) {
         mixToken = IERC20Metadata(_token);
 
         verifier = IVerifier(_verifier);
@@ -150,7 +153,7 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
      */
     function withdraw(
         WithdrawalProof calldata _proof,
-        address _recipient
+        address payable _recipient
     ) public onlyRole(OPERATOR_ROLE) nonReentrant {
         // Record gas left before deposit XD
         uint256 gasStart = gasleft();
@@ -182,17 +185,11 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
                 mode 1 is ETH to ETH (simple mix)
                 mode 3 is ETH to SOL (bridged mix)
              */
-            (bool withdrawal_success, ) = _recipient.call{
-                value: amount - refund
-            }("");
-            require(withdrawal_success, "ETH transfer failed");
+            _recipient.sendValue(amount - refund);
 
             // Fee transfer process (ETH)
             if (refund > 0) {
-                (bool fee_transfer_success, ) = feeCollector.call{
-                    value: refund
-                }("");
-                require(fee_transfer_success, "ETH transfer failed");
+                feeCollector.sendValue(refund);
             }
         } else if (mode == 2 || mode == 4) {
             /**
@@ -225,17 +222,17 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
     /**
      * @dev Updates the operator address for the contract, ensuring the new operator
      *      is different from the current one.
-     * @param _operator The new operator address.
+     * @param _feeCollector The new operator address.
      * @notice Only callable by accounts with OPERATOR_ROLE.
      */
     function setFeeCollector(
-        address _operator
+        address payable _feeCollector
     ) external onlyRole(OPERATOR_ROLE) {
         require(
-            feeCollector != _operator,
+            feeCollector != _feeCollector,
             "New operator must not be same with current operator"
         );
-        feeCollector = _operator;
+        feeCollector = _feeCollector;
     }
 
     function setMinETHDepositValue(
