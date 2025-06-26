@@ -107,10 +107,8 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
                 mixToken.balanceOf(msg.sender) >= _amount,
                 "Insufficient ERC20 balance"
             );
-            require(
-                mixToken.transferFrom(msg.sender, address(this), _amount),
-                "ERC20 transfer failed: Token may not approved"
-            );
+            SafeERC20.safeTransferFrom(mixToken, msg.sender, address(this), _amount);
+                
         } else {
             revert("Invalid mixing mode");
         }
@@ -197,10 +195,7 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
                 mode 4 is AINTI(SPL) to AINTI(SPL) (bridged mix)
              */
             uint256 feeAmount = fee * (10 ** mixToken.decimals());
-            require(
-                mixToken.transfer(_recipient, amount - feeAmount),
-                "ERC20 transfer failed: Contract(escrow) balance may insufficient"
-            );
+            SafeERC20.safeTransfer(mixToken, _recipient, amount - feeAmount);
 
             // Fee transfer process (ERC20)
             if (fee > 0) {
@@ -208,10 +203,7 @@ contract AintiVirusMixer is ReentrancyGuard, AccessControl {
                     mode 2 is AINTI(ERC20) to AINTI(ERC20) (simple mix)
                     mode 4 is AINTI(SPL) to AINTI(SPL) (bridged mix)
                 */
-                require(
-                    mixToken.transfer(feeCollector, feeAmount),
-                    "ERC20 transfer failed"
-                );
+                SafeERC20.safeTransfer(mixToken, feeCollector, feeAmount);
             }
         }
 
